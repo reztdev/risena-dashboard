@@ -1,6 +1,6 @@
 ## Risena Dashboard
 
-#fitur tambahan
+# fitur tambahan
 - konsinyasi
 - cetak nota & surat jalan
 - riwayat order / riwayat nota

@@ -125,6 +125,50 @@ CREATE TABLE IF NOT EXISTS print_logs (
     printed_at   TEXT    NOT NULL,              -- ISO datetime
     printed_str  TEXT    NOT NULL DEFAULT ''    -- format Bahasa Indonesia
 );
+
+-- ─────────────────────────────────────────────────────────
+-- RESEP PRODUK (Bill of Materials)
+-- jumlah_per_unit = satuan bahan per 1 unit produk
+-- Contoh: Dompet → Karton 0.2 lbr (artinya 1 lembar = 5 dompet)
+-- ─────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS product_recipes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    produk_id       INTEGER NOT NULL,
+    material_id     INTEGER NOT NULL,
+    jumlah_per_unit REAL    NOT NULL DEFAULT 0,
+    FOREIGN KEY (produk_id)   REFERENCES products(id)  ON DELETE CASCADE,
+    FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE,
+    UNIQUE (produk_id, material_id)
+);
+
+-- ─────────────────────────────────────────────────────────
+-- LOG PRODUKSI — 1 baris per batch produksi
+-- ─────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS productions (
+    id           TEXT    PRIMARY KEY,
+    produk_id    INTEGER NOT NULL,
+    nama_produk  TEXT    NOT NULL,
+    jumlah       INTEGER NOT NULL DEFAULT 0,
+    tanggal      TEXT    NOT NULL,
+    tanggal_str  TEXT    NOT NULL DEFAULT '',
+    catatan      TEXT    DEFAULT '',
+    FOREIGN KEY (produk_id) REFERENCES products(id)
+);
+ 
+-- ─────────────────────────────────────────────────────────
+-- DETAIL BAHAN TERPAKAI PER BATCH PRODUKSI
+-- Disimpan agar riwayat akurat walaupun resep diubah
+-- ─────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS production_materials (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    production_id   TEXT    NOT NULL,
+    material_id     INTEGER NOT NULL,
+    nama_material   TEXT    NOT NULL,
+    jumlah_terpakai REAL    NOT NULL DEFAULT 0,
+    satuan          TEXT    NOT NULL DEFAULT '',
+    FOREIGN KEY (production_id) REFERENCES productions(id) ON DELETE CASCADE
+);
 """
 
 

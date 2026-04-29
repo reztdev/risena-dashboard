@@ -14,7 +14,8 @@ from datetime import datetime
 
 from auth import router as auth_router
 from consignment import router as consignment_router
-from printing import router as printing_router         
+from printing import router as printing_router
+from production import router as production_router
                  
 
 # ─────────────────────────────────────────────────────
@@ -31,6 +32,7 @@ app = FastAPI(title="Risena API", version="2.1", lifespan=lifespan)
 app.include_router(auth_router)
 app.include_router(consignment_router)
 app.include_router(printing_router)
+app.include_router(production_router)
 
 PUBLIC_DIR = Path(__file__).parent / "public"
 

@@ -5,4 +5,5 @@
 - konsinyasi
 - cetak nota & surat jalan
 - riwayat order / riwayat nota
-- admin login 
+- admin login
+- Manufacturing/Bill of Materials (BOM)

@@ -703,7 +703,11 @@ function renderKsTable() {
 
   const list = consignments.filter(k => {
     if (st && k.status !== st) return false;
-    if (q && !k.namaProduk.toLowerCase().includes(q) && !k.tempat.toLowerCase().includes(q)) return false;
+    if (q) {
+      const inTempat = k.tempat.toLowerCase().includes(q);
+      const inProduk = k.items.some(it => it.namaProduk.toLowerCase().includes(q));
+      if (!inTempat && !inProduk) return false;
+    }
     return true;
   });
 
@@ -713,22 +717,23 @@ function renderKsTable() {
   }
 
   tbody.innerHTML = list.map(k => {
-    const sisa   = Math.max(0, k.qtyTitip - k.qtyTerjual - k.qtyKembali);
-    const komisi = k.komisiPersen / 100;
-    const profit = Math.round(k.qtyTerjual * k.hargaJual * (1 - komisi) - k.qtyTerjual * k.hargaModal);
-    const pc     = profit > 0 ? 'var(--green)' : profit < 0 ? 'var(--red)' : 'var(--text2)';
+    const pc     = k.profit > 0 ? 'var(--green)' : k.profit < 0 ? 'var(--red)' : 'var(--text2)';
     const badge  = k.status === 'aktif'
       ? '<span class="badge badge-blue">Aktif</span>'
       : '<span class="badge badge-green">Selesai</span>';
+    const produkLabel = k.items.length === 1
+      ? k.items[0].namaProduk
+      : `${k.items.length} produk`;
+    const produkTitle = k.items.map(it => `${it.namaProduk} (${it.qtyTitip} pcs)`).join(', ');
     return `<tr>
-      <td><strong>${k.namaProduk}</strong></td>
-      <td>${k.tempat}</td>
+      <td><strong>${k.tempat}</strong></td>
+      <td title="${produkTitle.replace(/"/g,'&quot;')}">${produkLabel}</td>
       <td style="font-size:12px;color:var(--text3);">${k.tanggalStr}</td>
       <td>${k.durasibulan} bln</td>
       <td>${k.qtyTitip}</td>
       <td>${k.qtyTerjual}</td>
-      <td>${sisa}</td>
-      <td style="font-weight:700;color:${pc};">${fmt(profit)}</td>
+      <td>${k.qtySisa}</td>
+      <td style="font-weight:700;color:${pc};">${fmt(k.profit)}</td>
       <td>${badge}</td>
       <td style="white-space:nowrap;">
         <button class="btn btn-secondary btn-sm" onclick="openKsLaporan('${k.id}')" title="Laporan">📊</button>
@@ -740,45 +745,104 @@ function renderKsTable() {
   }).join('');
 }
 
+// ── Baris produk dinamis di modal Tambah Konsinyasi ──────────────
+let ksItemSeq = 0;
+
+function addKsItemRow(prefill) {
+  ksItemSeq++;
+  const rid = ksItemSeq;
+  const wrap = document.getElementById('ks-items-wrap');
+  const optsHtml = products.map(p => `<option value="${p.id}">${p.nama}</option>`).join('');
+  const row = document.createElement('div');
+  row.className = 'ks-item-row';
+  row.id = `ks-item-${rid}`;
+  row.style.cssText = 'display:flex;gap:8px;align-items:flex-end;padding:10px;background:var(--bg2);border-radius:8px;';
+  row.innerHTML = `
+    <div class="form-group" style="flex:2;margin:0;"><label style="font-size:11px;">Produk</label>
+      <select id="ks-item-produk-${rid}" onchange="autoFillKsItemRow(${rid})"><option value="">— Pilih produk —</option>${optsHtml}</select>
+    </div>
+    <div class="form-group" style="flex:1;margin:0;"><label style="font-size:11px;">Qty</label>
+      <input type="number" id="ks-item-qty-${rid}" placeholder="0" min="1" oninput="recalcKsModal()">
+    </div>
+    <div class="form-group" style="flex:1.3;margin:0;"><label style="font-size:11px;">Harga Jual (Rp)</label>
+      <input type="number" id="ks-item-hargajual-${rid}" placeholder="0" min="0" oninput="recalcKsModal()">
+    </div>
+    <div class="form-group" style="flex:1.3;margin:0;"><label style="font-size:11px;">Modal/HPP (Rp)</label>
+      <input type="number" id="ks-item-modal-${rid}" placeholder="0" min="0" oninput="recalcKsModal()">
+    </div>
+    <button type="button" class="btn btn-danger btn-sm" style="height:36px;" onclick="removeKsItemRow(${rid})" title="Hapus produk ini">🗑</button>`;
+  wrap.appendChild(row);
+
+  if (prefill) {
+    document.getElementById(`ks-item-produk-${rid}`).value   = prefill.produkId || '';
+    document.getElementById(`ks-item-qty-${rid}`).value       = prefill.qtyTitip || '';
+    document.getElementById(`ks-item-hargajual-${rid}`).value = prefill.hargaJual || '';
+    document.getElementById(`ks-item-modal-${rid}`).value     = prefill.hargaModal || '';
+  }
+  recalcKsModal();
+}
+
+function removeKsItemRow(rid) {
+  const el = document.getElementById(`ks-item-${rid}`);
+  if (el) el.remove();
+  recalcKsModal();
+}
+
+function autoFillKsItemRow(rid) {
+  const pid = +document.getElementById(`ks-item-produk-${rid}`).value;
+  if (!pid) return;
+  const pr = prices.find(p => p.produkId === pid);
+  if (pr) {
+    const hpp = pr.components.reduce((a,c) => a + c.harga, 0) + pr.overhead;
+    document.getElementById(`ks-item-modal-${rid}`).value     = Math.round(hpp);
+    document.getElementById(`ks-item-hargajual-${rid}`).value = Math.round(pr.hargaJual);
+    recalcKsModal();
+  }
+}
+
+function _collectKsItems() {
+  const rows = document.querySelectorAll('#ks-items-wrap .ks-item-row');
+  const items = [];
+  rows.forEach(row => {
+    const rid    = row.id.replace('ks-item-', '');
+    const selEl  = document.getElementById(`ks-item-produk-${rid}`);
+    const pid    = +selEl.value;
+    const nama   = selEl.options[selEl.selectedIndex]?.text || '';
+    items.push({
+      produkId:   pid,
+      namaProduk: nama,
+      qtyTitip:   +document.getElementById(`ks-item-qty-${rid}`).value || 0,
+      hargaJual:  +document.getElementById(`ks-item-hargajual-${rid}`).value || 0,
+      hargaModal: +document.getElementById(`ks-item-modal-${rid}`).value || 0,
+    });
+  });
+  return items;
+}
+
 function openAddKonsinyasi() {
   document.getElementById('ks-edit-id').value = '';
   document.getElementById('modal-ks-title').textContent = 'Tambah Konsinyasi';
   document.getElementById('form-ks-tempat').value = '';
   document.getElementById('form-ks-tanggal').value = today();
   document.getElementById('form-ks-durasi').value = '3';
-  document.getElementById('form-ks-qty').value = '';
-  document.getElementById('form-ks-hargajual').value = '';
-  document.getElementById('form-ks-modal').value = '';
   document.getElementById('form-ks-komisi').value = '0';
   document.getElementById('form-ks-catatan').value = '';
-  // Isi dropdown produk
-  const sel = document.getElementById('form-ks-produk');
-  sel.innerHTML = '<option value="">— Pilih produk —</option>';
-  products.forEach(p => { sel.innerHTML += `<option value="${p.id}">${p.nama}</option>`; });
+  document.getElementById('ks-items-wrap').innerHTML = '';
+  ksItemSeq = 0;
+  addKsItemRow(); // mulai dengan 1 baris produk kosong
   recalcKsModal();
   openModal('modal-konsinyasi');
 }
 
-function autoFillKsModal() {
-  const pid = +document.getElementById('form-ks-produk').value;
-  if (!pid) return;
-  const pr = prices.find(p => p.produkId === pid);
-  if (pr) {
-    const hpp = pr.components.reduce((a,c) => a + c.harga, 0) + pr.overhead;
-    document.getElementById('form-ks-modal').value = Math.round(hpp);
-    document.getElementById('form-ks-hargajual').value = Math.round(pr.hargaJual);
-    recalcKsModal();
-  }
-}
-
 function recalcKsModal() {
-  const qty    = +document.getElementById('form-ks-qty').value || 0;
-  const jual   = +document.getElementById('form-ks-hargajual').value || 0;
-  const modal  = +document.getElementById('form-ks-modal').value || 0;
   const komisi = (+document.getElementById('form-ks-komisi').value || 0) / 100;
-  const totalModal = qty * modal;
-  const pendBersih = qty * jual * (1 - komisi);
-  const profit     = pendBersih - totalModal;
+  const items  = _collectKsItems();
+  let totalModal = 0, pendBersih = 0;
+  items.forEach(it => {
+    totalModal += it.qtyTitip * it.hargaModal;
+    pendBersih += it.qtyTitip * it.hargaJual * (1 - komisi);
+  });
+  const profit = pendBersih - totalModal;
   document.getElementById('ks-prev-modal').textContent = fmt(totalModal);
   document.getElementById('ks-prev-pend').textContent  = fmt(pendBersih);
   const el = document.getElementById('ks-prev-profit');
@@ -787,24 +851,21 @@ function recalcKsModal() {
 }
 
 async function saveKonsinyasi() {
-  const selEl  = document.getElementById('form-ks-produk');
-  const pid    = +selEl.value;
-  const nama   = selEl.options[selEl.selectedIndex]?.text || '';
-  const body   = {
-    produkId:     pid,
-    namaProduk:   nama,
+  const items = _collectKsItems();
+  const body  = {
     tempat:       document.getElementById('form-ks-tempat').value.trim(),
     tanggalMulai: document.getElementById('form-ks-tanggal').value,
     durasibulan:  +document.getElementById('form-ks-durasi').value,
-    qtyTitip:     +document.getElementById('form-ks-qty').value,
-    hargaJual:    +document.getElementById('form-ks-hargajual').value,
-    hargaModal:   +document.getElementById('form-ks-modal').value,
     komisiPersen: +document.getElementById('form-ks-komisi').value,
     catatan:      document.getElementById('form-ks-catatan').value,
+    items,
   };
-  if (!pid)          { toast('⚠️ Pilih produk!'); return; }
-  if (!body.tempat)  { toast('⚠️ Nama tempat wajib diisi!'); return; }
-  if (!body.qtyTitip){ toast('⚠️ Qty titip wajib diisi!'); return; }
+  if (!body.tempat) { toast('⚠️ Nama tempat wajib diisi!'); return; }
+  if (!items.length) { toast('⚠️ Tambahkan minimal 1 produk!'); return; }
+  for (const it of items) {
+    if (!it.produkId) { toast('⚠️ Ada baris produk yang belum dipilih!'); return; }
+    if (!it.qtyTitip) { toast(`⚠️ Qty titip untuk "${it.namaProduk}" wajib diisi!`); return; }
+  }
   try {
     await api('/api/consignments', 'POST', body);
     closeModal('modal-konsinyasi');
@@ -817,22 +878,36 @@ function openKsUpdate(id) {
   const k = consignments.find(x => x.id === id);
   if (!k) return;
   document.getElementById('ks-update-id').value = id;
-  document.getElementById('ks-update-terjual').value = k.qtyTerjual;
-  document.getElementById('ks-update-kembali').value = k.qtyKembali;
   document.getElementById('ks-update-info').innerHTML =
-    `<strong>${k.namaProduk}</strong> @ ${k.tempat}<br>
-     Titip: <strong>${k.qtyTitip}</strong> unit &nbsp;|&nbsp;
-     Terjual: <strong>${k.qtyTerjual}</strong> &nbsp;|&nbsp;
-     Kembali: <strong>${k.qtyKembali}</strong>`;
+    `<strong>${k.tempat}</strong> &nbsp;|&nbsp; ${k.items.length} produk &nbsp;|&nbsp; Mulai: ${k.tanggalStr}`;
+
+  const wrap = document.getElementById('ks-update-items-wrap');
+  wrap.innerHTML = k.items.map(it => `
+    <div class="ks-update-item-row" data-item-id="${it.id}" style="padding:10px;background:var(--bg2);border-radius:8px;">
+      <div style="font-weight:600;font-size:13px;margin-bottom:6px;">${it.namaProduk}
+        <span style="font-weight:400;color:var(--text3);font-size:12px;">— titip ${it.qtyTitip} pcs</span>
+      </div>
+      <div class="form-row" style="margin:0;">
+        <div class="form-group" style="margin:0;"><label style="font-size:11px;">Qty Terjual</label>
+          <input type="number" class="ks-upd-terjual" min="0" value="${it.qtyTerjual}"></div>
+        <div class="form-group" style="margin:0;"><label style="font-size:11px;">Qty Kembali</label>
+          <input type="number" class="ks-upd-kembali" min="0" value="${it.qtyKembali}"></div>
+      </div>
+    </div>`).join('');
+
   openModal('modal-ks-update');
 }
 
 async function saveKsUpdate() {
-  const id      = document.getElementById('ks-update-id').value;
-  const terjual = +document.getElementById('ks-update-terjual').value;
-  const kembali = +document.getElementById('ks-update-kembali').value;
+  const id = document.getElementById('ks-update-id').value;
+  const rows = document.querySelectorAll('#ks-update-items-wrap .ks-update-item-row');
+  const items = Array.from(rows).map(row => ({
+    itemId:     +row.dataset.itemId,
+    qtyTerjual: +row.querySelector('.ks-upd-terjual').value || 0,
+    qtyKembali: +row.querySelector('.ks-upd-kembali').value || 0,
+  }));
   try {
-    const data = await api(`/api/consignments/${id}/update-sold`, 'PUT', { qtyTerjual: terjual, qtyKembali: kembali });
+    const data = await api(`/api/consignments/${id}/update-sold`, 'PUT', { items });
     closeModal('modal-ks-update');
     toast(data.status === 'selesai' ? '✅ Konsinyasi selesai!' : 'Data diperbarui ✓');
     loadKonsinyasi();
@@ -845,15 +920,25 @@ async function openKsLaporan(id) {
     const info = data.info;
     const ak   = data.aktual;
     const proj = data.proyeksi;
+    const perItem = data.aktualPerItem;
 
-    document.getElementById('modal-ks-lap-title').textContent = `Laporan: ${info.namaProduk}`;
+    document.getElementById('modal-ks-lap-title').textContent = `Laporan: ${info.tempat}`;
     document.getElementById('ks-lap-info').innerHTML =
-      `<strong>${info.namaProduk}</strong> — ${info.tempat}<br>
+      `<strong>${info.tempat}</strong> — ${info.jumlahProduk} produk<br>
        Mulai: ${info.tanggalStr} &nbsp;|&nbsp; Durasi: ${info.durasibulan} bln &nbsp;|&nbsp;
        Status: <strong>${info.status}</strong> &nbsp;|&nbsp; Komisi toko: ${info.komisiPersen}%`;
 
     const sc = s => s === 'untung' ? 'var(--green)' : s === 'rugi' ? 'var(--red)' : 'var(--gold)';
     const bc = s => s === 'untung' ? 'badge-green' : s === 'rugi' ? 'badge-red' : 'badge-yellow';
+
+    document.getElementById('ks-lap-per-item').innerHTML = perItem.map(it => `
+      <tr>
+        <td>${it.namaProduk}</td>
+        <td>${it.qtyTitip}</td>
+        <td>${it.qtyTerjual}</td>
+        <td>${it.qtySisaDitangan}</td>
+        <td style="font-weight:700;color:${sc(it.statusProfit)};">${fmt(it.profit)}</td>
+      </tr>`).join('');
 
     document.getElementById('ks-lap-aktual').innerHTML = `
       <div class="hpp-row"><span>Unit Titip</span><span>${ak.qtyTitip}</span></div>

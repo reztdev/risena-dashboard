@@ -92,27 +92,33 @@ CREATE TABLE IF NOT EXISTS cashflows (
 );
 
 -- ─────────────────────────────────────────────────────
--- TABEL KONSINYASI
--- Menyimpan barang yang dititipkan ke toko/konsinyee.
--- Setiap baris = 1 batch konsinyasi per produk per tempat.
+-- KONSINYASI — pola header/detail (1 surat jalan = banyak produk)
+-- consignment_batches = 1 baris per pengiriman/surat jalan ke 1 toko
+-- consignment_items    = 1 baris per produk di dalam batch tsb
 -- ─────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS consignments (
+CREATE TABLE IF NOT EXISTS consignment_batches (
     id              TEXT    PRIMARY KEY,            -- e.g. KS-1720000000000
-    produk_id       INTEGER NOT NULL,
-    nama_produk     TEXT    NOT NULL,
     tempat          TEXT    NOT NULL,               -- nama toko / konsinyee
     tanggal_mulai   TEXT    NOT NULL,               -- ISO date
     tanggal_str     TEXT    NOT NULL DEFAULT '',    -- format Bahasa Indonesia
     durasi_bulan    INTEGER NOT NULL DEFAULT 3,     -- 1, 2, atau 3 bulan
+    komisi_persen   REAL    NOT NULL DEFAULT 0,     -- % komisi toko (0-100), berlaku utk semua produk di batch ini
+    status          TEXT    NOT NULL DEFAULT 'aktif'
+                        CHECK(status IN ('aktif','selesai')),
+    catatan         TEXT    DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS consignment_items (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id        TEXT    NOT NULL,
+    produk_id       INTEGER NOT NULL,
+    nama_produk     TEXT    NOT NULL,
     qty_titip       INTEGER NOT NULL DEFAULT 0,     -- unit dititipkan
     qty_terjual     INTEGER NOT NULL DEFAULT 0,     -- unit sudah terjual
     qty_kembali     INTEGER NOT NULL DEFAULT 0,     -- unit dikembalikan
     harga_jual      REAL    NOT NULL DEFAULT 0,     -- harga jual ke konsinyee
     harga_modal     REAL    NOT NULL DEFAULT 0,     -- HPP / modal per unit
-    komisi_persen   REAL    NOT NULL DEFAULT 0,     -- % komisi toko (0-100)
-    status          TEXT    NOT NULL DEFAULT 'aktif'
-                        CHECK(status IN ('aktif','selesai')),
-    catatan         TEXT    DEFAULT '',
+    FOREIGN KEY (batch_id)  REFERENCES consignment_batches(id) ON DELETE CASCADE,
     FOREIGN KEY (produk_id) REFERENCES products(id) ON DELETE CASCADE
 );
 
@@ -182,11 +188,55 @@ def fmt_date_id(dt: datetime) -> str:
 
 
 # ─────────────────────────────────────────────────────
+# MIGRASI — pindahkan data konsinyasi lama (1 baris = 1 produk)
+# ke skema baru header/detail (1 batch = banyak produk).
+# Aman dijalankan berkali-kali: hanya jalan jika tabel lama
+# 'consignments' masih ada (belum pernah dimigrasi sebelumnya).
+# ─────────────────────────────────────────────────────
+def _migrate_legacy_consignments(conn: sqlite3.Connection) -> None:
+    exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='consignments'"
+    ).fetchone()
+    if not exists:
+        return
+
+    old_rows = conn.execute("SELECT * FROM consignments").fetchall()
+
+    # Matikan sementara FK check — data lama bisa saja mengacu ke produk
+    # yang sudah dihapus dari master produk, itu tidak boleh menggagalkan migrasi.
+    conn.execute("PRAGMA foreign_keys=OFF")
+    for r in old_rows:
+        conn.execute(
+            """INSERT OR IGNORE INTO consignment_batches
+               (id, tempat, tanggal_mulai, tanggal_str, durasi_bulan,
+                komisi_persen, status, catatan)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (r["id"], r["tempat"], r["tanggal_mulai"], r["tanggal_str"],
+             r["durasi_bulan"], r["komisi_persen"], r["status"], r["catatan"]),
+        )
+        conn.execute(
+            """INSERT INTO consignment_items
+               (batch_id, produk_id, nama_produk, qty_titip,
+                qty_terjual, qty_kembali, harga_jual, harga_modal)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (r["id"], r["produk_id"], r["nama_produk"], r["qty_titip"],
+             r["qty_terjual"], r["qty_kembali"], r["harga_jual"], r["harga_modal"]),
+        )
+    conn.execute("PRAGMA foreign_keys=ON")
+
+    conn.execute("ALTER TABLE consignments RENAME TO consignments_legacy_backup")
+    conn.commit()
+    if old_rows:
+        print(f"✅ Migrasi {len(old_rows)} konsinyasi lama ke skema multi-produk selesai.")
+
+
+# ─────────────────────────────────────────────────────
 # INIT — dipanggil sekali saat aplikasi start
 # ─────────────────────────────────────────────────────
 def init_db() -> None:
     conn = get_conn()
     conn.executescript(SCHEMA)
     conn.commit()
+    _migrate_legacy_consignments(conn)
     conn.close()
     print("✅ Database siap.")
